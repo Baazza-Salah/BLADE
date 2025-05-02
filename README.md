@@ -93,9 +93,3 @@ To start using BLADE:
    - Logs Dashboard: real‑time monitoring and pie‑chart summaries.
    - Test Model: manual classification of custom log lines.
 
-
-This project is licensed under the [insert license type, e.g., MIT License]. See the `LICENSE` file for more details.
-
----
-
-Feel free to update the placeholders (e.g., project purpose, features, license type) with more specific details about your project. Let me know if you'd like assistance with customizing this further!
