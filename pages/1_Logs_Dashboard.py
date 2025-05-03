@@ -1,59 +1,62 @@
 import streamlit as st
 import pandas as pd
 import plotly.express as px
-import time
+import subprocess
 from datetime import datetime
-from utils import classify_log, LogHandler
-from watchdog.observers import Observer
-from watchdog.events import FileSystemEventHandler
+from utils import classify_log
 
 # Initialize session state for historical data
 if 'historical_data' not in st.session_state:
     st.session_state.historical_data = pd.DataFrame(columns=['timestamp', 'label', 'message'])
 
-if 'observer_started' not in st.session_state:
-    st.session_state.buffer = []
-    handler = LogHandler(log_file="/var/log/auth.log", buffer=st.session_state.buffer)
-    observer = Observer()
-    observer.schedule(handler, path="/var/log/", recursive=False)
-    observer.start()
-    st.session_state.observer = observer
-    st.session_state.observer_started = True
-
-    
 st.set_page_config(layout="wide")
 st.title("🚨 Real-time Log Monitoring & Anomaly Detection")
 
-log_file = st.text_input("Log file path", "/var/log/auth.log")
-if not log_file:
-    st.warning("Please enter a log file path.")
-    st.stop()
+# Function to fetch the latest logs using `journalctl`
+def fetch_latest_logs():
+    try:
+        # Run the journalctl command to get the latest logs
+        result = subprocess.run(
+            ["journalctl", "-n", "50", "--no-pager", "--output=short"],  # Fetch the last 50 logs
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True
+        )
+        if result.returncode != 0:
+            st.error("Failed to fetch logs. Ensure you have the necessary permissions to run `journalctl`.")
+            return []
+        return result.stdout.splitlines()
+    except Exception as e:
+        st.error(f"Error fetching logs: {e}")
+        return []
 
-# Dashboard columns
-col1, col2 = st.columns([3, 1])
-col3, col4 = st.columns(2)
-
-buffer = []
-handler = LogHandler(log_file, buffer)
-observer = Observer()
-observer.schedule(handler, path=log_file, recursive=False)
-observer.start()
-
-
-# Real-time metrics
+# Real-time metrics and dashboard updates
 def update_dashboard():
-    if buffer:
-        current_time = datetime.now().strftime("%H:%M:%S")
+    # Fetch the latest logs
+    logs = fetch_latest_logs()
+    if logs:
+        current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         
-        # Process new logs
+        # Process logs through the model
         new_entries = []
-        for line in buffer:
-            classification = classify_log(line)
-            new_entries.append({
-                'timestamp': current_time,
-                'label': classification['label'],
-                'message': classification['message']
-            })
+        for line in logs:
+            try:
+                classification = classify_log(line)
+                # Ensure the classification contains the expected keys
+                label = classification.get('label', 'UNKNOWN')
+                message = classification.get('message', line)  # Default to the raw log line if 'message' is missing
+                new_entries.append({
+                    'timestamp': current_time,
+                    'label': label,
+                    'message': message
+                })
+            except Exception as e:
+                # Handle unexpected errors in classification
+                new_entries.append({
+                    'timestamp': current_time,
+                    'label': 'ERROR',
+                    'message': f"Failed to classify log: {line} (Error: {e})"
+                })
         
         # Update historical data
         new_df = pd.DataFrame(new_entries)
@@ -61,19 +64,17 @@ def update_dashboard():
             [st.session_state.historical_data, new_df],
             ignore_index=True
         )
-        buffer.clear()
         
-        # Alert for anomalies
+        # Display anomalies
         anomalies = new_df[new_df['label'] == 'ANOMALY']
         if not anomalies.empty:
-            col2.error(f"🚨 {len(anomalies)} NEW ANOMALIES DETECTED!")
+            st.error(f"🚨 {len(anomalies)} NEW ANOMALIES DETECTED!")
             with st.expander("View Anomalies"):
                 st.table(anomalies)
         
         # Update metrics
         col1.metric("Total Logs Processed", len(st.session_state.historical_data))
-        col2.metric("Active Anomalies",
-        len(st.session_state.historical_data[st.session_state.historical_data['label'] == 'ANOMALY']))
+        col2.metric("Active Anomalies", len(st.session_state.historical_data[st.session_state.historical_data['label'] == 'ANOMALY']))
         
         # Visualizations
         with col3:
@@ -90,7 +91,7 @@ def update_dashboard():
             st.subheader("Anomaly Trend (Last 30 mins)")
             time_filtered = st.session_state.historical_data[
                 st.session_state.historical_data['timestamp'] >= 
-                (datetime.now() - pd.Timedelta(minutes=30)).strftime("%H:%M:%S")
+                (datetime.now() - pd.Timedelta(minutes=30)).strftime("%Y-%m-%d %H:%M:%S")
             ]
             if not time_filtered.empty:
                 fig2 = px.histogram(
@@ -100,12 +101,17 @@ def update_dashboard():
                     color_discrete_sequence=['#ff4b4b']
                 )
                 st.plotly_chart(fig2, use_container_width=True)
+        
+        # Add a table to display all system logs and their labels
+        st.subheader("All System Logs")
+        st.dataframe(st.session_state.historical_data)
+
+# Dashboard layout
+col1, col2 = st.columns([3, 1])
+col3, col4 = st.columns(2)
 
 # Main loop
 try:
-    while True:
-        update_dashboard()
-        time.sleep(2)  # Refresh rate
-except KeyboardInterrupt:
-    observer.stop()
-observer.join()
+    update_dashboard()
+except Exception as e:
+    st.error(f"An error occurred: {e}")
